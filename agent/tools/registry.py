@@ -3,8 +3,8 @@
 
 Единая точка, через которую рантайм (ReAct / Plan-Execute) узнаёт, какие
 инструменты есть, как их описать модели в промпте и как безопасно выполнить
-вызов по имени. Сама модель никогда не дёргает функции напрямую — только просит
-вызов по имени, а execute() валидирует имя, фильтрует аргументы и ловит ошибки.
+вызов по имени. Сама модель никогда не вызывает функции напрямую — только просит
+вызов по имени, а execute() валидирует имя, фильтрует аргументы и обрабатывает ошибки.
 """
 
 from dataclasses import dataclass, field
@@ -58,7 +58,7 @@ async def execute(name: str, arguments: dict | None) -> ToolResult:
     """Безопасно выполняет инструмент по имени.
 
     Валидирует имя, отбрасывает неизвестные аргументы и превращает любое
-    исключение в ToolResult с ok=False — рантайм просто кладёт это в наблюдение.
+    исключение в ToolResult с ok=False — рантайм просто помещает это в наблюдение.
     """
     tool = TOOLS.get(name)
     if tool is None:
@@ -74,5 +74,5 @@ async def execute(name: str, arguments: dict | None) -> ToolResult:
         return await tool.fn(**safe_args)
     except (ValueError, TypeError) as e:
         return err(f"invalid arguments: {e}")
-    except Exception as e:  # noqa: BLE001 — ошибку БД тоже отдаём в конверте
+    except Exception as e:  # noqa: BLE001 — ошибку БД тоже возвращаем в конверте
         return err(f"{type(e).__name__}: {e}")

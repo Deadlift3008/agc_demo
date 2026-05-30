@@ -22,8 +22,8 @@ interface TablePage {
   rows: Record<string, unknown>[];
 }
 
-// Умный рендер ячейки: null → «—», объект → усечённый JSON, длинный текст —
-// обрезаем и кладём полную версию в title (тултип).
+// Рендер ячейки: null → «—», объект → усечённый JSON, длинный текст —
+// обрезаем и помещаем полную версию в title (тултип).
 function renderCell(value: unknown): { text: string; title?: string } {
   if (value === null || value === undefined) return { text: "—" };
   if (typeof value === "object") {
@@ -71,7 +71,7 @@ export default function DbViewer() {
         setError(data.error ?? `Ошибка ${res.status}`);
         return;
       }
-      // Короткая сводка по выкачанному.
+      // Короткая сводка по загруженным данным.
       const summary = (data.synced as Array<Record<string, number | string>>)
         .map(
           (s) =>
@@ -80,7 +80,7 @@ export default function DbViewer() {
         .join("; ");
       setSyncMsg(`Готово — ${summary || "репозиториев в БД нет"}`);
       await loadTables();
-      // Если таблица открыта — освежим её содержимое.
+      // Если таблица открыта — обновим её содержимое.
       if (open) loadPage(open, page?.offset ?? 0);
     } catch (e) {
       setSyncMsg("");

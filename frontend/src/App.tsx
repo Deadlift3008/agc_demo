@@ -12,7 +12,7 @@ const MODES: { value: Mode; label: string }[] = [
 ];
 
 // Готовые системные промпты — best practices под каждый режим. Показываем их
-// под полем ввода как образец; кнопка «Подставить» кладёт текст в textarea.
+// под полем ввода как образец; кнопка «Подставить» помещает текст в textarea.
 const LLM_PROMPT = `Ты — ассистент проекта daksha-dev/openclaw. Отвечай кратко, точно и по-русски.
 Если чего-то не знаешь — честно скажи об этом и не выдумывай факты.`;
 
@@ -101,9 +101,9 @@ interface StreamMsg {
 
 // Накопительный трейс выполнения: всё, что происходит внутри агента.
 //  • status   — заголовок фазы («ReAct · шаг 2/3»);
-//  • thinking — «мышление» модели, прилетает по токенам (склеиваем в один блок);
+//  • thinking — «мышление» модели, поступает по токенам (объединяем в один блок);
 //  • trace    — план / служебная пометка (готовый блок);
-//  • tool     — вызов инструмента и его результат (заметная карточка).
+//  • tool     — вызов инструмента и его результат (отдельная карточка).
 type TraceKind = "status" | "thinking" | "trace" | "tool";
 interface TraceEntry {
   kind: TraceKind;
@@ -155,7 +155,7 @@ export default function App() {
         body: JSON.stringify({ prompt: systemPrompt }),
       });
       if (res.ok) {
-        setSavedPrompt(systemPrompt); // зафиксировали — поле больше не «грязное»
+        setSavedPrompt(systemPrompt); // зафиксировали — поле больше не содержит несохранённых изменений
         setPromptStatus("Сохранено ✓");
       } else {
         setPromptStatus(`Ошибка ${res.status}`);
@@ -172,8 +172,8 @@ export default function App() {
     setPromptStatus("Нажмите «Сохранить промпт», чтобы применить.");
   }
 
-  // Добавляет текстовую запись в трейс. Токены «мышления» склеиваем в последний
-  // блок, чтобы они копились в одном месте, а не плодили сотни строк.
+  // Добавляет текстовую запись в трейс. Токены «мышления» объединяем в последний
+  // блок, чтобы они накапливались в одном месте, а не создавали сотни строк.
   function pushTrace(kind: "status" | "thinking" | "trace", text: string) {
     setTrace((prev) => {
       if (kind === "thinking") {
@@ -209,7 +209,7 @@ export default function App() {
 
     // История для запроса = всё, что было, + новое сообщение пользователя.
     const history: Message[] = [...messages, { role: "user", content: query }];
-    // На экране сразу добавляем и реплику юзера, и пустой ответ ассистента.
+    // На экране сразу добавляем и реплику пользователя, и пустой ответ ассистента.
     setMessages([...history, { role: "assistant", content: "" }]);
     setQuery("");
     setLoading(true);
@@ -238,7 +238,7 @@ export default function App() {
         return;
       }
 
-      // Читаем стрим и руками разбираем SSE-фрейминг (data: {...}\n\n).
+      // Читаем стрим и самостоятельно разбираем SSE-фрейминг (data: {...}\n\n).
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";

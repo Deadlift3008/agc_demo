@@ -32,7 +32,7 @@ interface PromptBody {
 
 const app = Fastify({ logger: true });
 
-// Подключаемся к NATS один раз на старте, с ретраями (агент/натс могут стартовать чуть позже).
+// Подключаемся к NATS один раз на старте, с повторными попытками (агент/NATS могут стартовать чуть позже).
 let nc: NatsConnection | null = null;
 for (let attempt = 1; ; attempt++) {
   try {
@@ -46,7 +46,7 @@ for (let attempt = 1; ; attempt++) {
 }
 app.log.info(`connected to NATS at ${NATS_URL}`);
 
-// Системный промпт живёт в файле у питон-агента; backend лишь проксирует
+// Системный промпт хранится в файле у Python-агента; backend лишь проксирует
 // get/set туда через NATS request-reply.
 const PROMPT_GET_SUBJECT = "agent.system_prompt.get";
 const PROMPT_SET_SUBJECT = "agent.system_prompt.set";
@@ -76,7 +76,7 @@ app.post("/api/system-prompt", async (req, reply) => {
   }
 });
 
-// --- Смотрелка БД: список таблиц и постраничное содержимое (read-only) ---
+// --- Просмотр БД: список таблиц и постраничное содержимое (read-only) ---
 
 app.get("/api/db/tables", async () => {
   const tables = await Promise.all(
@@ -89,7 +89,7 @@ app.get("/api/db/tables", async () => {
   return { tables };
 });
 
-// Выкачать с GitHub все сущности для репозиториев, что уже есть в БД (без ключа).
+// Загрузить с GitHub все сущности для репозиториев, которые уже есть в БД (без ключа).
 app.post("/api/db/sync", async (_req, reply) => {
   try {
     const synced = await syncAll();
@@ -107,7 +107,7 @@ app.get("/api/db/tables/:name", async (req, reply) => {
   }
 
   const q = (req.query ?? {}) as { limit?: string; offset?: string };
-  // limit зажимаем в [1, 200], offset — неотрицательный. Оба идут параметрами.
+  // limit ограничиваем диапазоном [1, 200], offset — неотрицательный. Оба передаются параметрами.
   const limit = Math.min(Math.max(Number(q.limit) || 25, 1), 200);
   const offset = Math.max(Number(q.offset) || 0, 0);
 
@@ -128,7 +128,7 @@ app.post("/api/chat", async (req, reply) => {
   const reqId = crypto.randomUUID();
   const respSubject = `agent.resp.${reqId}`;
 
-  // Забираем сырой ответ под стрим (SSE-фрейминг), Fastify дальше его не трогает.
+  // Берём сырой ответ для стрима (SSE-фрейминг), Fastify дальше его не обрабатывает.
   reply.hijack();
   const res = reply.raw;
   res.writeHead(200, {
@@ -140,10 +140,10 @@ app.post("/api/chat", async (req, reply) => {
 
   const sub = nc!.subscribe(respSubject);
 
-  // Если клиент отвалился — отписываемся, чтобы цикл ниже завершился.
+  // Если клиент отключился — отписываемся, чтобы цикл ниже завершился.
   res.on("close", () => sub.unsubscribe());
 
-  // Публикуем запрос для питон-агента. reply — сабжект, куда агент шлёт токены.
+  // Публикуем запрос для Python-агента. reply — субъект, куда агент отправляет токены.
   nc!.publish(
     "agent.requests",
     sc.encode(

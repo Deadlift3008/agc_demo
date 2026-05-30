@@ -1,9 +1,9 @@
 """
 Низкоуровневый клиент OpenRouter.
 
-Голый кастом, без LLM-SDK: дёргаем HTTP API напрямую через httpx со stream=True
-и руками парсим SSE-поток. Это «механика под капотом» — выше по стеку (agent.py)
-её уже не видно, там просто `async for token in stream_chat(...)`.
+Собственная реализация, без LLM-SDK: обращаемся к HTTP API напрямую через httpx
+со stream=True и самостоятельно парсим SSE-поток. Это внутренняя механика —
+выше по стеку (agent.py) её уже не видно, там просто `async for token in stream_chat(...)`.
 """
 
 import json
@@ -20,8 +20,8 @@ _HEADERS = {
     "Content-Type": "application/json",
     # Эти два заголовка OpenRouter рекомендует, но не требует.
     "HTTP-Referer": "http://localhost:5173",
-    # Только ASCII/Latin-1: значение HTTP-заголовка — кириллица здесь уронит
-    # запрос с UnicodeEncodeError. Это лишь метка в аналитике OpenRouter.
+    # Только ASCII/Latin-1: значение HTTP-заголовка — кириллица здесь приведёт
+    # к UnicodeEncodeError. Это лишь метка в аналитике OpenRouter.
     "X-Title": "Course Demo",
 }
 
@@ -49,7 +49,7 @@ async def stream_chat(
         # Просим вернуть точный расход токенов финальным чанком стрима.
         "stream_options": {"include_usage": True},
     }
-    # Параметры кладём только если их явно передали (иначе — дефолты модели).
+    # Параметры передаём только если они явно заданы (иначе — значения по умолчанию модели).
     if temperature is not None:
         payload["temperature"] = temperature
     if top_p is not None:
@@ -97,7 +97,7 @@ async def complete_chat(
 ) -> str:
     """Один НЕстриминговый вызов модели — возвращает весь ответ целиком.
 
-    Нужен для «служебных» шагов ReAct/Plan-Execute, где модель должна вернуть
+    Используется на служебных шагах ReAct/Plan-Execute, где модель должна вернуть
     JSON-решение (вызов инструмента или план), а не текст для пользователя.
     """
     payload: dict = {"model": model, "messages": messages, "stream": False}

@@ -1,18 +1,18 @@
 /**
- * Бесплатные (без токена) парсеры GitHub.
+ * Парсеры GitHub без токена.
  *
- * Ходит в публичный REST API GitHub без ключа (лимит — 60 запросов/час на IP) и
- * для КАЖДОГО репозитория, который уже лежит в таблице repos, выкачивает связанные
- * сущности: метаданные репо, коммиты, пул-реквесты, issues и релизы — и кладёт их
+ * Обращается к публичному REST API GitHub без ключа (лимит — 60 запросов/час на IP) и
+ * для КАЖДОГО репозитория, который уже находится в таблице repos, загружает связанные
+ * сущности: метаданные репо, коммиты, пул-реквесты, issues и релизы — и сохраняет их
  * в соответствующие таблицы (upsert, без дублей).
  *
- * Никаких секретов: обязателен только User-Agent (этого требует GitHub).
+ * Секреты не требуются: обязателен только User-Agent (этого требует GitHub).
  */
 import { pool } from "./db";
 
 const GH_API = "https://api.github.com";
 const PER_PAGE = 100;
-// Без ключа лимит жёсткий (60 req/час), поэтому не уходим глубже нескольких страниц.
+// Без ключа лимит строгий (60 req/час), поэтому не уходим глубже нескольких страниц.
 const MAX_PAGES = 3;
 
 const HEADERS = {
@@ -25,7 +25,7 @@ interface RepoRow {
   id: number;
   owner: string;
   name: string;
-  // Докуда уже долистали по каждому типу — отсюда продолжаем (а не с начала).
+  // До какой страницы уже прочитано по каждому типу — отсюда продолжаем (а не с начала).
   commits_deepest_page: number;
   pulls_deepest_page: number;
   issues_deepest_page: number;
@@ -40,7 +40,7 @@ export interface SyncResult {
   releases: number;
 }
 
-/** Один GET к GitHub. Бросает понятную ошибку на rate-limit / не-200. */
+/** Один GET к GitHub. Возвращает понятную ошибку при rate-limit / не-200. */
 async function ghFetch(path: string): Promise<any> {
   const res = await fetch(`${GH_API}${path}`, { headers: HEADERS });
 
@@ -66,8 +66,8 @@ async function ghFetch(path: string): Promise<any> {
 
 /**
  * Постранично собирает СЛЕДУЮЩИЕ MAX_PAGES страниц, начиная со страницы
- * startPage (= уже выкачанная глубина + 1). Возвращает строки и новую глубину
- * `lastPage` — её и надо сохранить, чтобы следующая выкачка пошла дальше, а не
+ * startPage (= уже загруженная глубина + 1). Возвращает строки и новую глубину
+ * `lastPage` — её и надо сохранить, чтобы следующая загрузка продолжилась дальше, а не
  * повторила те же страницы. Если ничего нового нет, lastPage = startPage - 1.
  */
 async function ghPaged(
@@ -83,12 +83,12 @@ async function ghPaged(
     if (!Array.isArray(batch) || batch.length === 0) break;
     items.push(...batch);
     lastPage = page;
-    if (batch.length < PER_PAGE) break; // дошли до конца истории
+    if (batch.length < PER_PAGE) break; // достигнут конец истории
   }
   return { items, lastPage };
 }
 
-/** Выкачивает сущности для всех репозиториев из БД. */
+/** Загружает сущности для всех репозиториев из БД. */
 export async function syncAll(): Promise<SyncResult[]> {
   const { rows } = await pool.query<RepoRow>(
     `SELECT id, owner, name,
