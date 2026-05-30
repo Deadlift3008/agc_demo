@@ -1,0 +1,723 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #fff;
+  color: #1a1a1a;
+}
+
+/* Экран делится на две колонки: чат (2/3) слева и токены/контекст (1/3) справа. */
+.page {
+  height: 100vh;
+  display: flex;
+  flex-direction: row;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+/* Левая колонка (2/3): шапка сверху, поток сообщений в середине, ввод снизу. */
+.main-col {
+  flex: 2;
+  min-width: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #eee;
+}
+
+/* Правая колонка (1/3): токены сверху, контекст по шагам — скроллится под ними. */
+.side-col {
+  flex: 1;
+  min-width: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: #fafafb;
+  overflow: hidden;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid #eee;
+  background: #fff;
+}
+
+.title {
+  font-weight: 500;
+  font-size: 18px;
+  color: #555;
+  margin: 0;
+}
+
+.topbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ghost {
+  border: 1px solid #ddd;
+  background: #fff;
+  color: #444;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.ghost:hover {
+  background: #f4f4f4;
+}
+
+/* Панель настроек выезжает под шапкой. */
+.settings {
+  padding: 16px 24px;
+  border-bottom: 1px solid #eee;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.settings label {
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  color: #666;
+  gap: 6px;
+}
+
+.settings input,
+.settings select {
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.prompt-label {
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  color: #666;
+  gap: 6px;
+}
+
+.prompt-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.save {
+  border: none;
+  background: #1a73e8;
+  color: #fff;
+  font-size: 14px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.prompt-status {
+  font-size: 13px;
+  color: #888;
+}
+
+/* Справочник готовых промптов под полем ввода. */
+.prompt-examples {
+  margin-top: 14px;
+  border-top: 1px solid #eee;
+  padding-top: 12px;
+}
+
+.prompt-examples-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #666;
+  margin-bottom: 10px;
+}
+
+.prompt-example {
+  margin-bottom: 12px;
+}
+
+.prompt-example-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: #444;
+  margin-bottom: 4px;
+}
+
+.prompt-example-body {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #333;
+  background: #f6f7f9;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.prompt-example-note {
+  font-size: 12px;
+  color: #888;
+  margin-top: 6px;
+  line-height: 1.45;
+}
+
+/* Поток сообщений: единственный скроллящийся блок. */
+.chat {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.msg-role {
+  font-size: 12px;
+  font-weight: 600;
+  color: #999;
+}
+
+/* Панель «ход выполнения»: накопительный трейс агента над текстом ответа. */
+.trace {
+  margin: 4px 0 10px;
+  border: 1px solid #e6e6ea;
+  border-radius: 8px;
+  background: #fbfbfd;
+  overflow: hidden;
+}
+
+.trace-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: #777;
+  padding: 6px 12px;
+  background: #f2f2f5;
+  border-bottom: 1px solid #e6e6ea;
+}
+
+.trace-item {
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 6px 12px;
+  border-bottom: 1px solid #f0f0f3;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.trace-item:last-child {
+  border-bottom: none;
+}
+
+/* Заголовок фазы — выделяем. */
+.trace-status .trace-text {
+  font-weight: 600;
+  color: #555;
+}
+
+/* Вызовы инструментов и результаты — моноширинный, читается как лог. */
+.trace-trace .trace-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #364;
+}
+
+/* Мышление модели — приглушённый моноширинный блок. */
+.trace-thinking {
+  background: #f7f7fb;
+}
+
+.trace-thinking .trace-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #667;
+}
+
+.trace-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #99a;
+  margin-right: 8px;
+  vertical-align: top;
+}
+
+/* Карточка вызова инструмента — заметная, не теряется среди строк трейса. */
+.trace-tool {
+  padding: 8px 12px;
+}
+
+.tool-card {
+  border: 1px solid #d7e3ff;
+  border-radius: 8px;
+  background: #f3f7ff;
+  overflow: hidden;
+}
+
+.tool-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #e7f0ff;
+  border-bottom: 1px solid #d7e3ff;
+}
+
+.tool-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #fff;
+  background: #2f6bff;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.tool-sig {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #234;
+  word-break: break-all;
+}
+
+.tool-ok {
+  font-size: 11px;
+  font-weight: 700;
+  color: #2f6b2f;
+}
+
+.tool-err {
+  font-size: 11px;
+  font-weight: 700;
+  color: #a33;
+}
+
+.tool-card-body {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #333;
+  padding: 8px 10px;
+}
+
+/* Панель «контекст по шагам» — в правой колонке, занимает её остаток и скроллится.
+   Полный снимок каждого вызова модели: вход целиком и ответ целиком. */
+.ctx-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #e2e2e8;
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.ctx-head {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #99a;
+  margin-bottom: 8px;
+}
+
+.ctx-empty {
+  color: #aaa;
+  padding: 4px 0;
+}
+
+.ctx-step {
+  border: 1px solid #eee;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  background: #fbfbfd;
+}
+
+.ctx-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  list-style: none;
+}
+
+.ctx-step-head::-webkit-details-marker {
+  display: none;
+}
+
+.ctx-step-n {
+  font-weight: 700;
+  color: #2f6bff;
+}
+
+.ctx-step-label {
+  flex: 1;
+  color: #444;
+}
+
+.ctx-step-tok {
+  font-variant-numeric: tabular-nums;
+  color: #888;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ctx-block-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #aab;
+  padding: 6px 8px 2px;
+}
+
+.ctx-msg {
+  padding: 0 8px 4px;
+}
+
+.ctx-msg-role {
+  font-size: 10px;
+  font-weight: 700;
+  color: #99a;
+  text-transform: uppercase;
+}
+
+.ctx-msg-body,
+.ctx-out {
+  margin: 2px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #333;
+  background: #f6f7f9;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.ctx-out {
+  margin: 2px 8px 8px;
+  background: #f3f7ff;
+  border-color: #d7e3ff;
+}
+
+/* Счётчик токенов — карточка сверху правой колонки. */
+.token-meter {
+  flex: none;
+  width: 100%;
+  background: #fff;
+  border: 1px solid #e2e2e8;
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.token-meter-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #99a;
+  margin-bottom: 6px;
+}
+
+.token-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  color: #555;
+  padding: 1px 0;
+}
+
+.token-row b {
+  font-variant-numeric: tabular-nums;
+  color: #1a1a1a;
+}
+
+.token-total {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid #eee;
+  font-weight: 600;
+}
+
+/* Маркер «есть несохранённые изменения промпта». */
+.prompt-dirty {
+  font-size: 12px;
+  font-weight: 600;
+  color: #b26a00;
+}
+
+.msg-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 15px;
+  line-height: 1.55;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid #eee;
+}
+
+.msg-user .msg-content {
+  background: #eef4ff;
+  border-color: #d8e6ff;
+}
+
+.msg-assistant .msg-content {
+  background: #fff;
+}
+
+/* Поле ввода прижато к низу. */
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 16px 24px;
+  border-top: 1px solid #eee;
+  background: #fff;
+}
+
+.input {
+  flex: 1;
+  border: 1px solid #ddd;
+  border-radius: 24px;
+  padding: 12px 20px;
+  font-size: 16px;
+  outline: none;
+  background: #fff;
+}
+
+.input:focus {
+  border-color: #1a73e8;
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
+}
+
+.go {
+  width: 48px;
+  height: 48px;
+  border: none;
+  border-radius: 50%;
+  background: #1a73e8;
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.go:disabled {
+  background: #9bbcf0;
+  cursor: default;
+}
+
+/* --- Смотрелка БД (/db) --- */
+
+.db-page {
+  max-width: 1000px;
+  margin: 0 auto;
+  min-height: 100vh;
+}
+
+.db-error {
+  margin: 16px 24px;
+  padding: 12px 16px;
+  border: 1px solid #f3c2c2;
+  background: #fdeaea;
+  color: #a33;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.db-sync {
+  margin: 16px 24px;
+  padding: 12px 16px;
+  border: 1px solid #cfe6cf;
+  background: #eef8ee;
+  color: #2f6b2f;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.db-list {
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.db-item {
+  border: 1px solid #eee;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.db-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  background: #fff;
+  border: none;
+  cursor: pointer;
+  font-size: 15px;
+  text-align: left;
+}
+
+.db-head:hover {
+  background: #fafafa;
+}
+
+.db-caret {
+  color: #999;
+  width: 14px;
+}
+
+.db-name {
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.db-meta {
+  margin-left: auto;
+  color: #999;
+  font-size: 13px;
+}
+
+.db-body {
+  border-top: 1px solid #eee;
+  padding: 12px 16px;
+  background: #fcfcfc;
+}
+
+.db-hint {
+  color: #999;
+  font-size: 14px;
+  padding: 8px 0;
+}
+
+.db-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.db-counter {
+  font-size: 13px;
+  color: #777;
+}
+
+.db-pager {
+  display: flex;
+  gap: 6px;
+}
+
+.db-pager button {
+  border: 1px solid #ddd;
+  background: #fff;
+  color: #444;
+  font-size: 13px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.db-pager button:disabled {
+  color: #bbb;
+  cursor: default;
+}
+
+.db-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.db-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+.db-table th,
+.db-table td {
+  border-bottom: 1px solid #f0f0f0;
+  padding: 8px 12px;
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.db-table th {
+  background: #f7f7f7;
+  font-weight: 600;
+  color: #555;
+  position: sticky;
+  top: 0;
+}
+
+.db-table tbody tr:hover {
+  background: #fafcff;
+}
+
+.db-empty {
+  color: #aaa;
+  text-align: center;
+  padding: 16px;
+}

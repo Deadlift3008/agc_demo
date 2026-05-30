@@ -1,0 +1,62 @@
+services:
+  nats:
+    image: nats:2.10-alpine
+    command: ["-m", "8222"]            # -m: HTTP-мониторинг на 8222 (http://localhost:8222)
+    ports:
+      - "4222:4222"                     # клиентский порт NATS
+      - "8222:8222"                     # мониторинг (необязательно)
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: demo
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # init.sql выполняется ТОЛЬКО при первой инициализации (пустой volume).
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d demo"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    environment:
+      - NATS_URL=nats://nats:4222
+      - PORT=8080
+      - DATABASE_URL=postgresql://demo:demo@postgres:5432/demo
+    ports:
+      - "8080:8080"
+    depends_on:
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
+  agent:
+    build: ./agent
+    env_file:
+      - .env                            # OPENROUTER_API_KEY и DEFAULT_MODEL
+    environment:
+      - NATS_URL=nats://nats:4222
+      - DATABASE_URL=postgresql://demo:demo@postgres:5432/demo
+    depends_on:
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
