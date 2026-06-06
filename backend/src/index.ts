@@ -8,6 +8,16 @@ import {
   listColumns,
 } from "./db";
 import { syncAll } from "./github";
+import {
+  MAX_PKS,
+  VECTOR_TABLES,
+  buildDocument,
+  buildId,
+  buildMetadata,
+  callVectorizer,
+  collectionFor,
+  fetchRowsByPk,
+} from "./vector";
 
 const NATS_URL = process.env.NATS_URL ?? "nats://nats:4222";
 const PORT = Number(process.env.PORT ?? 8080);
@@ -117,6 +127,133 @@ app.get("/api/db/tables/:name", async (req, reply) => {
     fetchRows(name, limit, offset),
   ]);
   return { name, columns, rowCount, limit, offset, rows };
+});
+
+// --- Векторный полигон: Postgres → FRIDA → Chroma (страницы /vector и /memory) ---
+
+interface VectorizeBody {
+  table?: string;
+  pks?: unknown[][];
+  columns?: string[];
+}
+
+interface RetrieveBody {
+  collection?: string;
+  query?: string;
+  topK?: number;
+}
+
+// Готовность эмбеддера и Chroma (фронт опрашивает, пока модель грузится).
+app.get("/api/vector/health", async (_req, reply) => {
+  const { status, data } = await callVectorizer("/health");
+  return reply.code(status).send(data);
+});
+
+// Таблицы, доступные для векторизации: первичный ключ + колонки-кандидаты в текст.
+app.get("/api/vector/tables", async () => {
+  const tables = await Promise.all(
+    Object.entries(VECTOR_TABLES).map(async ([name, cfg]) => ({
+      name,
+      pk: cfg.pk,
+      textColumns: cfg.textColumns,
+      collection: collectionFor(name),
+      rowCount: await countRows(name),
+      columns: await listColumns(name),
+    })),
+  );
+  return { tables };
+});
+
+// Главная кнопка страницы /vector: выбранные строки → документы → векторы → Chroma.
+app.post("/api/vector/vectorize", async (req, reply) => {
+  const body = (req.body ?? {}) as VectorizeBody;
+  const table = body.table ?? "";
+  const cfg = VECTOR_TABLES[table];
+  if (!cfg) {
+    return reply.code(404).send({ error: `table '${table}' is not allowed` });
+  }
+  if (!Array.isArray(body.pks) || body.pks.length === 0) {
+    return reply.code(400).send({ error: "pks is required — выбери строки" });
+  }
+  if (body.pks.length > MAX_PKS) {
+    return reply.code(400).send({ error: `не больше ${MAX_PKS} строк за раз` });
+  }
+
+  // Колонки для текста: только реально существующие в таблице (information_schema).
+  const known = new Set((await listColumns(table)).map((c) => c.name));
+  const columns = (body.columns ?? cfg.textColumns).filter((c) => known.has(c));
+  if (columns.length === 0) {
+    return reply.code(400).send({ error: "columns пуст — выбери хотя бы одну колонку" });
+  }
+
+  const rows = await fetchRowsByPk(table, cfg.pk, body.pks);
+  const items: { id: string; document: string; metadata: Record<string, unknown> }[] = [];
+  const skipped: string[] = []; // строки без текста — вектору не из чего получиться
+  for (const row of rows) {
+    const id = buildId(table, cfg.pk, row);
+    const document = buildDocument(row, columns);
+    if (!document) {
+      skipped.push(id);
+      continue;
+    }
+    items.push({ id, document, metadata: buildMetadata(table, cfg.pk, row) });
+  }
+  if (items.length === 0) {
+    return reply
+      .code(400)
+      .send({ error: "в выбранных строках и колонках нет текста", skipped });
+  }
+
+  const collection = collectionFor(table);
+  const { status, data } = await callVectorizer("/vectorize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ collection, items }),
+  });
+  if (status >= 400) return reply.code(status).send(data);
+
+  // Склеиваем ответ для UI: документ + его вектор бок о бок.
+  const vectors = (data.vectors ?? []) as number[][];
+  return {
+    collection,
+    model: data.model,
+    dim: data.dim,
+    count: items.length,
+    skipped,
+    items: items.map((it, i) => ({ ...it, vector: vectors[i] ?? [] })),
+  };
+});
+
+// Страница /memory: список коллекций, поиск по смыслу, очистка.
+app.get("/api/memory/collections", async (_req, reply) => {
+  const { status, data } = await callVectorizer("/collections");
+  return reply.code(status).send(data);
+});
+
+app.post("/api/memory/retrieve", async (req, reply) => {
+  const body = (req.body ?? {}) as RetrieveBody;
+  if (!body.collection || !body.query?.trim()) {
+    return reply.code(400).send({ error: "collection и query обязательны" });
+  }
+  const { status, data } = await callVectorizer("/retrieve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      collection: body.collection,
+      query: body.query,
+      top_k: body.topK ?? 5,
+    }),
+  });
+  return reply.code(status).send(data);
+});
+
+app.delete("/api/memory/collections/:name", async (req, reply) => {
+  const { name } = req.params as { name: string };
+  const { status, data } = await callVectorizer(
+    `/collections/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+  return reply.code(status).send(data);
 });
 
 app.post("/api/chat", async (req, reply) => {

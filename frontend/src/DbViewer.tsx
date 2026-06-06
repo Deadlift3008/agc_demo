@@ -133,6 +133,12 @@ export default function DbViewer() {
           <a className="ghost" href="/">
             ← К чату
           </a>
+          <a className="ghost" href="/vector">
+            ≋ Векторы
+          </a>
+          <a className="ghost" href="/memory">
+            ✦ Chroma
+          </a>
         </div>
       </header>
 

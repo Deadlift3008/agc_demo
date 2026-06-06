@@ -24,12 +24,35 @@ services:
       timeout: 3s
       retries: 20
 
+  chroma:
+    image: chromadb/chroma:1.0.0
+    ports:
+      - "8000:8000"                     # REST API Chroma (удобно дебажить напрямую)
+    volumes:
+      - chromadata:/data                # персистентность векторов между перезапусками
+
+  vectorizer:
+    build: ./vectorizer
+    environment:
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - EMBED_MODEL=ai-forever/FRIDA    # эмбеддер; можно подменить на модель полегче
+      - EMBED_DEVICE=cpu                # cpu | cuda | mps — показывается в UI на кнопке
+      - HF_HOME=/cache/hf               # кеш Hugging Face — в томе, чтобы не качать ~3 ГБ каждый раз
+    volumes:
+      - hfcache:/cache/hf
+    ports:
+      - "9000:9000"                     # FastAPI сервиса векторизации
+    depends_on:
+      - chroma
+
   backend:
     build: ./backend
     environment:
       - NATS_URL=nats://nats:4222
       - PORT=8080
       - DATABASE_URL=postgresql://demo:demo@postgres:5432/demo
+      - VECTORIZER_URL=http://vectorizer:9000
     ports:
       - "8080:8080"
     depends_on:
@@ -41,7 +64,11 @@ services:
   agent:
     build: ./agent
     env_file:
-      - .env                            # OPENROUTER_API_KEY и DEFAULT_MODEL
+      # OPENROUTER_API_KEY и DEFAULT_MODEL. required: false — без .env compose
+      # не падает целиком (агенту без ключа всё равно не работать, а векторный
+      # полигон /vector и /memory от него не зависит).
+      - path: .env
+        required: false
     environment:
       - NATS_URL=nats://nats:4222
       - DATABASE_URL=postgresql://demo:demo@postgres:5432/demo
@@ -60,3 +87,5 @@ services:
 
 volumes:
   pgdata:
+  chromadata:
+  hfcache:

@@ -721,3 +721,210 @@ body {
   text-align: center;
   padding: 16px;
 }
+
+/* --- Векторный полигон (/vector и /memory) --- */
+
+.lab-body {
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Карточка одного шага полигона. */
+.lab-panel {
+  border: 1px solid #eee;
+  border-radius: 10px;
+  background: #fff;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lab-step-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #555;
+}
+
+.lab-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.lab-row select {
+  padding: 7px 10px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fff;
+}
+
+.lab-hint {
+  font-size: 12.5px;
+  color: #888;
+  line-height: 1.5;
+}
+
+.lab-hint code,
+.lab-step-title code {
+  background: #f4f4f7;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.lab-warn {
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid #f0e0b8;
+  background: #fdf6e3;
+  color: #8a6d1a;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.lab-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lab-actions .save:disabled {
+  background: #9bbcf0;
+  cursor: default;
+}
+
+/* Чипсы выбора колонок. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #ddd;
+  border-radius: 16px;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #555;
+  cursor: pointer;
+  background: #fff;
+}
+
+.chip-on {
+  border-color: #2f6bff;
+  background: #eef4ff;
+  color: #234;
+}
+
+/* Карточка «документ + вектор» и карточка найденного документа. */
+.vec-card {
+  border: 1px solid #e6e6ea;
+  border-radius: 8px;
+  background: #fbfbfd;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vec-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.vec-card-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 800px) {
+  .vec-card-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Раскрывашка с вектором: голова + полный JSON по клику. */
+.vec-vector summary {
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: #364;
+  word-break: break-all;
+}
+
+.vec-vector pre {
+  margin: 6px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #333;
+  background: #f3f7ff;
+  border: 1px solid #d7e3ff;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+/* /memory: строка запроса и top-k. */
+.mem-query {
+  flex: 1;
+  min-width: 240px;
+}
+
+.lab-topk {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #666;
+}
+
+.lab-topk input {
+  width: 56px;
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.hit-rank {
+  font-weight: 700;
+  color: #2f6bff;
+}
+
+.hit-score {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: #888;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Полоска похожести: чем ближе по смыслу, тем длиннее. */
+.sim-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: #eef0f4;
+  overflow: hidden;
+}
+
+.sim-bar-fill {
+  height: 100%;
+  background: #2f6bff;
+  border-radius: 3px;
+}
