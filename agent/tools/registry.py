@@ -11,7 +11,12 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
 from .base import ToolResult, err
-from .postgres import pg_get_repo, pg_list_commits, pg_list_issues
+from .postgres import (
+    pg_get_latest_release,
+    pg_get_repo,
+    pg_list_commits,
+    pg_list_issues,
+)
 
 
 @dataclass
@@ -41,6 +46,12 @@ TOOLS: dict[str, Tool] = {
         description="информация о репозитории (owner, name, описание, статистика)",
         params={},
         fn=pg_get_repo,
+    ),
+    "pg_get_latest_release": Tool(
+        name="pg_get_latest_release",
+        description="последний релиз репозитория (tag, название, дата публикации, url)",
+        params={},
+        fn=pg_get_latest_release,
     ),
 }
 

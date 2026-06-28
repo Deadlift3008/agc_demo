@@ -88,3 +88,17 @@ async def pg_get_repo() -> ToolResult:
         """
     )
     return ok(dict(record) if record is not None else None)
+
+
+async def pg_get_latest_release() -> ToolResult:
+    """Последний релиз репозитория (самый свежий по published_at)."""
+    pool = await _get_pool()
+    record = await pool.fetchrow(
+        """
+        SELECT repo_id, id, tag_name, name, published_at, url
+          FROM releases
+         ORDER BY published_at DESC NULLS LAST, id DESC
+         LIMIT 1
+        """
+    )
+    return ok(dict(record) if record is not None else None)
