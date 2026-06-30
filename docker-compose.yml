@@ -36,7 +36,7 @@ services:
     environment:
       - CHROMA_HOST=chroma
       - CHROMA_PORT=8000
-      - EMBED_MODEL=ai-forever/FRIDA    # эмбеддер; можно подменить на модель полегче
+      - EMBED_MODEL=intfloat/multilingual-e5-small    # эмбеддер; можно подменить на модель полегче
       - EMBED_DEVICE=cpu                # cpu | cuda | mps — показывается в UI на кнопке
       - HF_HOME=/cache/hf               # кеш Hugging Face — в томе, чтобы не качать ~3 ГБ каждый раз
     volumes:

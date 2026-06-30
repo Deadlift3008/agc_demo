@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
 from .base import ToolResult, err
+from .long_memory import memory_search
 from .postgres import (
     pg_get_latest_release,
     pg_get_repo,
@@ -52,6 +53,16 @@ TOOLS: dict[str, Tool] = {
         description="последний релиз репозитория (tag, название, дата публикации, url)",
         params={},
         fn=pg_get_latest_release,
+    ),
+    "memory_search": Tool(
+        name="memory_search",
+        description=(
+            "семантический поиск по векторной БД Chroma (коллекция pg_commits): "
+            "короткий запрос 2–4 слова, top_k — сколько лучших совпадений вернуть; "
+            "результаты отсортированы по релевантности, но нужна дополнительная фильтрация"
+        ),
+        params={"query": "query:str", "top_k": "top_k:int=5"},
+        fn=memory_search,
     ),
 }
 
