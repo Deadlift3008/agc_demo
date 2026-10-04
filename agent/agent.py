@@ -15,9 +15,15 @@
 Контракт наружу: на вход AgentRequest, на выход — асинхронный поток событий.
 Событие — это либо str (кусок текста ответа), либо Status (служебная строка
 статуса для UI). Транспорт (main.py) сам раскладывает их по token()/status().
+
+Бюджет токенов (soft stop): после фактического usage от OpenRouter копим расход
+за ход. Когда остаётся только reserve — не стартуем новые decision-шаги, а один
+раз финализируем ответ по уже собранным observations. Если лимит уже пробит —
+финальный LLM-вызов пропускаем и отдаём короткое сообщение.
 """
 
 import json
+import os
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
@@ -29,6 +35,10 @@ from tools import registry
 MAX_REACT_STEPS = 3
 MAX_PLAN_STEPS = 3
 
+# 0 = лимит выключен. Перекрывается AgentRequest.max_tokens / запросом с фронта.
+DEFAULT_MAX_TOKENS = int(os.environ.get("MAX_TOKENS_PER_TURN", "0"))
+DEFAULT_TOKEN_RESERVE = int(os.environ.get("TOKEN_BUDGET_RESERVE", "500"))
+
 
 @dataclass
 class AgentRequest:
@@ -38,6 +48,11 @@ class AgentRequest:
     mode: str = "llm"  # "llm" | "react" | "plan_execute"
     temperature: float | None = None
     top_p: float | None = None
+    # Бюджет токенов на ход (prompt+completion). None → DEFAULT_MAX_TOKENS из env;
+    # 0 / отрицательное → без лимита.
+    max_tokens: int | None = None
+    # Резерв под финальный ответ при soft stop. None → DEFAULT_TOKEN_RESERVE.
+    token_reserve: int | None = None
 
 
 @dataclass
@@ -98,8 +113,75 @@ class Snapshot:
     tout: int
 
 
+@dataclass
+class TokenBudget:
+    """Счётчик фактических токенов за ход + soft-stop пороги.
+
+    Считаем только usage от провайдера (не эвристику). Soft stop: при
+    spent >= max_total - reserve прекращаем decision/tool-циклы и оставляем
+    один финальный вызов; при spent >= max_total финальный LLM тоже пропускаем.
+    """
+
+    max_total: int
+    reserve: int = 500
+    spent_in: int = 0
+    spent_out: int = 0
+    _notified_reserve: bool = False
+    _notified_exceeded: bool = False
+
+    @property
+    def spent(self) -> int:
+        return self.spent_in + self.spent_out
+
+    @property
+    def exceeded(self) -> bool:
+        return self.spent >= self.max_total
+
+    @property
+    def should_finalize(self) -> bool:
+        """Пора выходить из цикла и тратить резерв на финальный ответ."""
+        return self.spent >= max(0, self.max_total - self.reserve)
+
+    def can_continue_loop(self) -> bool:
+        """Можно ли стартовать очередной decision-шаг ReAct / planner."""
+        return not self.should_finalize
+
+    def can_finalize(self) -> bool:
+        """Можно ли сделать финальный LLM-вызов (ещё не пробили жёсткий потолок)."""
+        return not self.exceeded
+
+    def add_usage(self, prompt_tokens: int, completion_tokens: int) -> list[str]:
+        """Учитывает дельту одного вызова. Возвращает одноразовые уведомления для UI."""
+        self.spent_in += max(0, int(prompt_tokens))
+        self.spent_out += max(0, int(completion_tokens))
+        notes: list[str] = []
+        if self.exceeded and not self._notified_exceeded:
+            self._notified_exceeded = True
+            notes.append(
+                f"⏹ бюджет токенов исчерпан: {self.spent}/{self.max_total}"
+            )
+        elif self.should_finalize and not self._notified_reserve:
+            self._notified_reserve = True
+            notes.append(
+                f"⚠ резерв бюджета: {self.spent}/{self.max_total} "
+                f"(reserve={self.reserve}) — soft stop"
+            )
+        return notes
+
+
 # Любое событие, которое отдаёт агент наружу. str — кусок финального ответа.
 Event = str | Status | Trace | Thinking | ToolCall | Usage | Snapshot
+
+
+def _make_budget(req: "AgentRequest") -> TokenBudget | None:
+    """Собирает бюджет хода из запроса / env. None — лимит выключен."""
+    limit = DEFAULT_MAX_TOKENS if req.max_tokens is None else req.max_tokens
+    if limit is None or int(limit) <= 0:
+        return None
+    reserve = (
+        DEFAULT_TOKEN_RESERVE if req.token_reserve is None else req.token_reserve
+    )
+    return TokenBudget(max_total=int(limit), reserve=max(0, int(reserve)))
 
 
 def _est_tokens(text: str) -> int:
@@ -108,13 +190,20 @@ def _est_tokens(text: str) -> int:
 
 
 async def _pump(
-    convo: list[dict], req: "AgentRequest", totals: dict, *, as_thinking: bool, label: str = ""
+    convo: list[dict],
+    req: "AgentRequest",
+    totals: dict,
+    *,
+    as_thinking: bool,
+    label: str = "",
+    budget: TokenBudget | None = None,
 ):
     """Стримит ответ модели, обновляя счётчики токенов и отдавая Usage-события.
 
     Контент отдаётся как Thinking (служебные шаги) или как str-кусок финального
     ответа. Вход оцениваем сразу по длине промпта, выход — растёт по мере стрима,
     а как только придёт точный usage — оба значения уточняются до точных.
+    Бюджет (если задан) обновляется только из фактического usage.
 
     По завершении вызова отдаёт Snapshot: полный контекст (что ушло в модель) и
     полный ответ модели за этот вызов — для панели «контекст по шагам»."""
@@ -134,9 +223,14 @@ async def _pump(
             totals["out"] = out_before + _est_tokens("x" * out_chars)
             yield Usage(totals["in"], totals["out"])
         elif ev["type"] == "usage":  # точный расход — уточняем оценки
-            totals["in"] = in_before + ev["prompt_tokens"]
-            totals["out"] = out_before + ev["completion_tokens"]
+            prompt_tokens = int(ev.get("prompt_tokens") or 0)
+            completion_tokens = int(ev.get("completion_tokens") or 0)
+            totals["in"] = in_before + prompt_tokens
+            totals["out"] = out_before + completion_tokens
             yield Usage(totals["in"], totals["out"])
+            if budget is not None:
+                for note in budget.add_usage(prompt_tokens, completion_tokens):
+                    yield Trace(note)
 
     # Снимок этого вызова: вход целиком, выход целиком, токены именно за вызов.
     yield Snapshot(
@@ -170,7 +264,14 @@ async def run_llm(req: AgentRequest) -> AsyncIterator[Event]:
     """Прогоняет запрос через модель и отдаёт токены ответа по мере генерации."""
     messages = build_messages(req)
     totals = {"in": 0, "out": 0}
-    async for ev in _pump(messages, req, totals, as_thinking=False, label="LLM-вызов"):
+    budget = _make_budget(req)
+    if budget is not None:
+        yield Trace(
+            f"бюджет хода: max={budget.max_total}, reserve={budget.reserve}"
+        )
+    async for ev in _pump(
+        messages, req, totals, as_thinking=False, label="LLM-вызов", budget=budget
+    ):
         yield ev
 
 
@@ -206,23 +307,90 @@ REACT_PROTOCOL = """\
 только из результатов инструментов."""
 
 
+async def _soft_finalize_react(
+    convo: list[dict],
+    req: AgentRequest,
+    totals: dict,
+    budget: TokenBudget | None,
+    *,
+    reason: str,
+) -> AsyncIterator[Event]:
+    """Soft stop / исчерпание шагов: один финальный ответ по уже собранным данным."""
+    if reason == "budget" and budget is not None:
+        yield Status(
+            f"⏹ бюджет токенов {budget.spent}/{budget.max_total} — "
+            "отвечаю по собранным данным…"
+        )
+        yield Trace(
+            f"soft stop: token budget ({budget.spent}/{budget.max_total}, "
+            f"reserve={budget.reserve})"
+        )
+    else:
+        yield Status("ReAct: шаги исчерпаны — формирую ответ по собранным данным…")
+
+    if budget is not None and not budget.can_finalize():
+        yield (
+            f"Достигнут лимит токенов ({budget.spent}/{budget.max_total}). "
+            "Финальный вызов модели пропущен — смотри результаты инструментов выше."
+        )
+        return
+
+    convo.append(
+        {
+            "role": "user",
+            "content": (
+                "Шаги закончились. Дай финальный ответ пользователю обычным текстом "
+                "по уже собранным данным."
+            ),
+        }
+    )
+    async for ev in _pump(
+        convo,
+        req,
+        totals,
+        as_thinking=False,
+        label="ReAct: финал по собранным данным",
+        budget=budget,
+    ):
+        yield ev
+
+
 async def run_react(req: AgentRequest) -> AsyncIterator[Event]:
     """ReAct: на каждом шаге модель решает — звать инструмент или дать ответ.
 
     Наружу отдаём максимум информации: рассуждения модели стримим по токенам,
-    каждое решение/вызов инструмента/наблюдение — отдельным блоком трейса."""
+    каждое решение/вызов инструмента/наблюдение — отдельным блоком трейса.
+    Soft stop по бюджету: после фактического usage, если остался только reserve,
+    выходим из цикла и один раз финализируем ответ."""
     system = _compose_system(REACT_PROTOCOL.format(tools=registry.tools_description()))
     convo: list[dict] = [{"role": "system", "content": system}, *req.messages]
     totals = {"in": 0, "out": 0}
+    budget = _make_budget(req)
+    if budget is not None:
+        yield Trace(
+            f"бюджет хода: max={budget.max_total}, reserve={budget.reserve}"
+        )
 
     for step in range(1, MAX_REACT_STEPS + 1):
+        if budget is not None and not budget.can_continue_loop():
+            async for ev in _soft_finalize_react(
+                convo, req, totals, budget, reason="budget"
+            ):
+                yield ev
+            return
+
         yield Status(f"ReAct · шаг {step}/{MAX_REACT_STEPS}: модель решает…")
         # Решение модели накапливаем для разбора, но не выводим целиком в UI —
         # наружу идёт только текущий счётчик токенов (Usage). Что именно сделано,
         # пользователь увидит в виде перечисления: статусы шагов + карточки инструментов.
         buf: list[str] = []
         async for ev in _pump(
-            convo, req, totals, as_thinking=True, label=f"ReAct шаг {step}/{MAX_REACT_STEPS}: решение"
+            convo,
+            req,
+            totals,
+            as_thinking=True,
+            label=f"ReAct шаг {step}/{MAX_REACT_STEPS}: решение",
+            budget=budget,
         ):
             if isinstance(ev, Thinking):
                 buf.append(ev.text)
@@ -249,6 +417,12 @@ async def run_react(req: AgentRequest) -> AsyncIterator[Event]:
                 convo.append(
                     {"role": "user", "content": "Не отдавай сырой JSON. Сформулируй финальный ответ обычным человеческим текстом по-русски на основе уже полученных результатов инструментов."}
                 )
+                if budget is not None and not budget.can_continue_loop():
+                    async for ev in _soft_finalize_react(
+                        convo, req, totals, budget, reason="budget"
+                    ):
+                        yield ev
+                    return
                 continue
             yield Trace("✓ модель решила, что данных достаточно — финальный ответ.")
             yield answer
@@ -265,6 +439,7 @@ async def run_react(req: AgentRequest) -> AsyncIterator[Event]:
             # Добавляем в диалог решение модели и наблюдение — как новый ход.
             convo.append({"role": "assistant", "content": raw})
             convo.append({"role": "user", "content": f"Результат {tool}: {observation}"})
+            # Tool дешёвый; soft stop сработает на следующей итерации перед decision.
             continue
 
         # Неизвестный тип решения — просим переформулировать через наблюдение.
@@ -275,11 +450,9 @@ async def run_react(req: AgentRequest) -> AsyncIterator[Event]:
         )
 
     # Шаги кончились — просим финальный ответ по собранным наблюдениям (стримом).
-    yield Status("ReAct: шаги исчерпаны — формирую ответ по собранным данным…")
-    convo.append(
-        {"role": "user", "content": "Шаги закончились. Дай финальный ответ пользователю обычным текстом по уже собранным данным."}
-    )
-    async for ev in _pump(convo, req, totals, as_thinking=False, label="ReAct: финал по собранным данным"):
+    async for ev in _soft_finalize_react(
+        convo, req, totals, budget, reason="steps"
+    ):
         yield ev
 
 
@@ -299,13 +472,23 @@ PLAN_PROTOCOL = """\
 
 
 async def run_plan_execute(req: AgentRequest) -> AsyncIterator[Event]:
-    """Plan-Execute: модель строит план, рантайм выполняет его без её участия."""
+    """Plan-Execute: модель строит план, рантайм выполняет его без её участия.
+
+    Tools не тратят LLM-токены — их выполняем всегда. Soft stop влияет на
+    planner/finalize: если после плана жёсткий лимит уже пробит, финальный
+    LLM-вызов пропускаем."""
     planner_system = _compose_system(
         PLAN_PROTOCOL.format(
             tools=registry.tools_description(), max_steps=MAX_PLAN_STEPS
         )
     )
     totals = {"in": 0, "out": 0}
+    budget = _make_budget(req)
+    if budget is not None:
+        yield Trace(
+            f"бюджет хода: max={budget.max_total}, reserve={budget.reserve}"
+        )
+
     yield Status("Plan-Execute: составляю план…")
     # План накапливаем для разбора, но не выводим целиком — ниже отдадим его
     # перечислением шагов (Trace «📋 план») и карточками выполненных инструментов.
@@ -316,6 +499,7 @@ async def run_plan_execute(req: AgentRequest) -> AsyncIterator[Event]:
         totals,
         as_thinking=True,
         label="Plan: планировщик",
+        budget=budget,
     ):
         if isinstance(ev, Thinking):
             buf.append(ev.text)
@@ -346,6 +530,27 @@ async def run_plan_execute(req: AgentRequest) -> AsyncIterator[Event]:
         )
 
     # Финальный вызов: задача + план + результаты → ответ (стримом).
+    if budget is not None and not budget.can_finalize():
+        yield Status(
+            f"⏹ бюджет токенов {budget.spent}/{budget.max_total} — "
+            "финальный вызов пропущен"
+        )
+        yield Trace(
+            f"soft stop: token budget exceeded after plan "
+            f"({budget.spent}/{budget.max_total})"
+        )
+        yield (
+            f"Достигнут лимит токенов ({budget.spent}/{budget.max_total}). "
+            "Финальный вызов модели пропущен — смотри результаты инструментов выше."
+        )
+        return
+
+    if budget is not None and budget.should_finalize:
+        yield Status(
+            f"⚠ резерв бюджета {budget.spent}/{budget.max_total} — "
+            "формирую финальный ответ…"
+        )
+
     yield Status("Plan-Execute: формирую ответ по собранным данным…")
     summary = json.dumps(
         {"plan": steps, "observations": observations},
@@ -362,6 +567,7 @@ async def run_plan_execute(req: AgentRequest) -> AsyncIterator[Event]:
         totals,
         as_thinking=False,
         label="Plan: финальный ответ",
+        budget=budget,
     ):
         yield ev
 

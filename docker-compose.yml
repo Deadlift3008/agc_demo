@@ -72,6 +72,10 @@ services:
     environment:
       - NATS_URL=nats://nats:4222
       - DATABASE_URL=postgresql://demo:demo@postgres:5432/demo
+      # Бюджет токенов на ход (перекрывается запросом max_tokens с фронта).
+      # Soft stop: TOKEN_BUDGET_RESERVE оставляем под финальный ответ.
+      - MAX_TOKENS_PER_TURN=${MAX_TOKENS_PER_TURN:-8000}
+      - TOKEN_BUDGET_RESERVE=${TOKEN_BUDGET_RESERVE:-500}
     depends_on:
       nats:
         condition: service_started

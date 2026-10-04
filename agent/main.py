@@ -34,6 +34,16 @@ PROMPT_GET_SUBJECT = "agent.system_prompt.get"
 PROMPT_SET_SUBJECT = "agent.system_prompt.set"
 
 
+def _optional_int(value: object) -> int | None:
+    """None/пустая строка → None; иначе int. Нужно для max_tokens из JSON/UI."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 async def on_request(req: dict, responder: Responder) -> None:
     """Мост: NATS-запрос → агент → токены обратно. Транспортных деталей тут нет."""
     agent_req = AgentRequest(
@@ -42,6 +52,8 @@ async def on_request(req: dict, responder: Responder) -> None:
         mode=req.get("mode") or "llm",
         temperature=req.get("temperature"),
         top_p=req.get("top_p"),
+        max_tokens=_optional_int(req.get("max_tokens")),
+        token_reserve=_optional_int(req.get("token_reserve")),
     )
     async for ev in run_agent(agent_req):
         # Событие — заголовок фазы / трейс / мышление / кусок финального ответа.

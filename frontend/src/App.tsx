@@ -42,6 +42,8 @@ interface ChatBody {
   mode: Mode;
   temperature?: number;
   top_p?: number;
+  max_tokens?: number;
+  token_reserve?: number;
 }
 
 interface ToolResult {
@@ -118,6 +120,8 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [temperature, setTemperature] = useState("");
   const [topP, setTopP] = useState("");
+  // Пусто = взять MAX_TOKENS_PER_TURN из env агента; 0 = выключить лимит.
+  const [maxTokens, setMaxTokens] = useState("");
   const [model, setModel] = useState(MODELS[0]);
   const [mode, setMode] = useState<Mode>("llm");
   const [trace, setTrace] = useState<TraceEntry[]>([]);
@@ -223,6 +227,7 @@ export default function App() {
     const body: ChatBody = { messages: history, model, mode };
     if (temperature !== "") body.temperature = Number(temperature);
     if (topP !== "") body.top_p = Number(topP);
+    if (maxTokens !== "") body.max_tokens = Number(maxTokens);
 
     try {
       const res = await fetch("/api/chat", {
@@ -390,6 +395,18 @@ export default function App() {
                 onChange={(e) => setTopP(e.target.value)}
               />
             </label>
+            <label>
+              max tokens / ход
+              <input
+                type="number"
+                step="100"
+                min="0"
+                placeholder="из env агента"
+                value={maxTokens}
+                onChange={(e) => setMaxTokens(e.target.value)}
+                title="Бюджет токенов на ход. Пусто — из env, 0 — без лимита"
+              />
+            </label>
           </div>
 
           <label className="prompt-label">
@@ -528,7 +545,12 @@ export default function App() {
           </div>
           <div className="token-row token-total">
             <span>Σ всего</span>
-            <b>{usage.tin + usage.tout}</b>
+            <b>
+              {usage.tin + usage.tout}
+              {maxTokens !== "" && Number(maxTokens) > 0
+                ? ` / ${maxTokens}`
+                : ""}
+            </b>
           </div>
         </div>
 

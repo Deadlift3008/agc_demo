@@ -34,6 +34,10 @@ interface ChatBody {
   top_p?: number;
   model?: string;
   mode?: "llm" | "react" | "plan_execute";
+  /** Бюджет токенов на ход (prompt+completion). 0 / omit — из env агента. */
+  max_tokens?: number;
+  /** Резерв под финальный ответ при soft stop. */
+  token_reserve?: number;
 }
 
 interface PromptBody {
@@ -292,6 +296,8 @@ app.post("/api/chat", async (req, reply) => {
         top_p: body.top_p,
         model: body.model,
         mode: body.mode,
+        max_tokens: body.max_tokens,
+        token_reserve: body.token_reserve,
       }),
     ),
   );
