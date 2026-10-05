@@ -34,6 +34,9 @@ from tools import registry
 # Жёсткие лимиты шагов — чтобы цикл не разрастался и демо оставалось предсказуемым.
 MAX_REACT_STEPS = 3
 MAX_PLAN_STEPS = 3
+# Сколько раз подряд можно просить модель переформулировать (сырой JSON / unknown type),
+# прежде чем soft-stop по зацикливанию.
+MAX_REPHRASE_RETRIES = 2
 
 # 0 = лимит выключен. Перекрывается AgentRequest.max_tokens / запросом с фронта.
 DEFAULT_MAX_TOKENS = int(os.environ.get("MAX_TOKENS_PER_TURN", "0"))
@@ -307,6 +310,17 @@ REACT_PROTOCOL = """\
 только из результатов инструментов."""
 
 
+def _tool_signature(tool: str, arguments: object) -> str:
+    """Каноническая сигнатура tool-вызова для детекции повторов (порядок ключей не важен)."""
+    args = arguments if isinstance(arguments, dict) else {}
+    return json.dumps(
+        {"tool": tool, "arguments": args},
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+
+
 async def _soft_finalize_react(
     convo: list[dict],
     req: AgentRequest,
@@ -314,8 +328,13 @@ async def _soft_finalize_react(
     budget: TokenBudget | None,
     *,
     reason: str,
+    detail: str = "",
 ) -> AsyncIterator[Event]:
-    """Soft stop / исчерпание шагов: один финальный ответ по уже собранным данным."""
+    """Soft stop / исчерпание шагов: один финальный ответ по уже собранным данным.
+
+    reason: "budget" | "steps" | "loop"
+    detail: уточнение для loop (повтор tool / слишком много переформулировок).
+    """
     if reason == "budget" and budget is not None:
         yield Status(
             f"⏹ бюджет токенов {budget.spent}/{budget.max_total} — "
@@ -325,6 +344,10 @@ async def _soft_finalize_react(
             f"soft stop: token budget ({budget.spent}/{budget.max_total}, "
             f"reserve={budget.reserve})"
         )
+    elif reason == "loop":
+        why = detail or "зацикливание"
+        yield Status(f"⏹ {why} — отвечаю по собранным данным…")
+        yield Trace(f"soft stop: loop ({why})")
     else:
         yield Status("ReAct: шаги исчерпаны — формирую ответ по собранным данным…")
 
@@ -361,11 +384,15 @@ async def run_react(req: AgentRequest) -> AsyncIterator[Event]:
     Наружу отдаём максимум информации: рассуждения модели стримим по токенам,
     каждое решение/вызов инструмента/наблюдение — отдельным блоком трейса.
     Soft stop по бюджету: после фактического usage, если остался только reserve,
-    выходим из цикла и один раз финализируем ответ."""
+    выходим из цикла и один раз финализируем ответ.
+    Soft stop по зацикливанию: повторный tool+args или слишком много
+    служебных переформулировок → тоже soft finalize."""
     system = _compose_system(REACT_PROTOCOL.format(tools=registry.tools_description()))
     convo: list[dict] = [{"role": "system", "content": system}, *req.messages]
     totals = {"in": 0, "out": 0}
     budget = _make_budget(req)
+    seen_tool_calls: set[str] = set()
+    rephrase_count = 0
     if budget is not None:
         yield Trace(
             f"бюджет хода: max={budget.max_total}, reserve={budget.reserve}"
@@ -412,11 +439,33 @@ async def run_react(req: AgentRequest) -> AsyncIterator[Event]:
             # репозитория, результат инструмента) вместо обычного текста.
             # Такое наружу не пропускаем — просим переформулировать обычным текстом.
             if not answer or _looks_like_json(answer):
-                yield Trace("⚠ финальный ответ выглядит как сырой JSON — прошу переформулировать.")
+                rephrase_count += 1
+                yield Trace(
+                    "⚠ финальный ответ выглядит как сырой JSON — "
+                    f"прошу переформулировать ({rephrase_count}/{MAX_REPHRASE_RETRIES})."
+                )
                 convo.append({"role": "assistant", "content": raw})
                 convo.append(
-                    {"role": "user", "content": "Не отдавай сырой JSON. Сформулируй финальный ответ обычным человеческим текстом по-русски на основе уже полученных результатов инструментов."}
+                    {
+                        "role": "user",
+                        "content": (
+                            "Не отдавай сырой JSON. Сформулируй финальный ответ "
+                            "обычным человеческим текстом по-русски на основе уже "
+                            "полученных результатов инструментов."
+                        ),
+                    }
                 )
+                if rephrase_count >= MAX_REPHRASE_RETRIES:
+                    async for ev in _soft_finalize_react(
+                        convo,
+                        req,
+                        totals,
+                        budget,
+                        reason="loop",
+                        detail="зацикливание: слишком много переформулировок",
+                    ):
+                        yield ev
+                    return
                 if budget is not None and not budget.can_continue_loop():
                     async for ev in _soft_finalize_react(
                         convo, req, totals, budget, reason="budget"
@@ -431,6 +480,22 @@ async def run_react(req: AgentRequest) -> AsyncIterator[Event]:
         if decision.get("type") == "tool_call":
             tool = str(decision.get("tool", ""))
             arguments = decision.get("arguments") or {}
+            signature = _tool_signature(tool, arguments)
+            if signature in seen_tool_calls:
+                yield Trace(
+                    f"⏹ зацикливание: повторный вызов {tool} с теми же аргументами"
+                )
+                async for ev in _soft_finalize_react(
+                    convo,
+                    req,
+                    totals,
+                    budget,
+                    reason="loop",
+                    detail=f"зацикливание: повторный вызов {tool}",
+                ):
+                    yield ev
+                return
+            seen_tool_calls.add(signature)
             yield Status(f"ReAct · шаг {step}/{MAX_REACT_STEPS}: выполняю {tool}…")
             result = await registry.execute(tool, arguments)
             result_dict = result.to_dict()
@@ -443,11 +508,32 @@ async def run_react(req: AgentRequest) -> AsyncIterator[Event]:
             continue
 
         # Неизвестный тип решения — просим переформулировать через наблюдение.
-        yield Trace("⚠ неизвестный type в решении — прошу модель переформулировать.")
+        rephrase_count += 1
+        yield Trace(
+            "⚠ неизвестный type в решении — "
+            f"прошу модель переформулировать ({rephrase_count}/{MAX_REPHRASE_RETRIES})."
+        )
         convo.append({"role": "assistant", "content": raw})
         convo.append(
-            {"role": "user", "content": 'Неизвестный type. Верни {"type": "final", ...} или {"type": "tool_call", ...}.'}
+            {
+                "role": "user",
+                "content": (
+                    'Неизвестный type. Верни {"type": "final", ...} '
+                    'или {"type": "tool_call", ...}.'
+                ),
+            }
         )
+        if rephrase_count >= MAX_REPHRASE_RETRIES:
+            async for ev in _soft_finalize_react(
+                convo,
+                req,
+                totals,
+                budget,
+                reason="loop",
+                detail="зацикливание: слишком много переформулировок",
+            ):
+                yield ev
+            return
 
     # Шаги кончились — просим финальный ответ по собранным наблюдениям (стримом).
     async for ev in _soft_finalize_react(
