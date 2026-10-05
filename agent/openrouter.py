@@ -94,11 +94,12 @@ async def complete_chat(
     model: str,
     temperature: float | None = None,
     top_p: float | None = None,
-) -> str:
-    """Один НЕстриминговый вызов модели — возвращает весь ответ целиком.
+) -> tuple[str, dict[str, int]]:
+    """Один НЕстриминговый вызов модели.
 
-    Используется на служебных шагах ReAct/Plan-Execute, где модель должна вернуть
-    JSON-решение (вызов инструмента или план), а не текст для пользователя.
+    Возвращает (content, usage), где usage — {"prompt_tokens", "completion_tokens"}
+    (нули, если провайдер usage не прислал). Удобно для служебных шагов
+    (критик, JSON-решения), где стрим не нужен.
     """
     payload: dict = {"model": model, "messages": messages, "stream": False}
     if temperature is not None:
@@ -111,4 +112,9 @@ async def complete_chat(
         if resp.status_code != 200:
             raise RuntimeError(f"OpenRouter {resp.status_code}: {resp.text[:500]}")
         body = resp.json()
-        return (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        content = (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        usage = body.get("usage") or {}
+        return content or "", {
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0),
+        }

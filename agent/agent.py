@@ -20,6 +20,9 @@
 за ход. Когда остаётся только reserve — не стартуем новые decision-шаги, а один
 раз финализируем ответ по уже собранным observations. Если лимит уже пробит —
 финальный LLM-вызов пропускаем и отдаём короткое сообщение.
+
+Критик выбора tools: перед execute отдельный LLM-вызов проверяет уместность
+tool+args; при серии отказов — soft stop (reason=critic).
 """
 
 import json
@@ -27,7 +30,7 @@ import os
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
-from openrouter import stream_chat
+from openrouter import complete_chat, stream_chat
 from system_prompt import load_prompt
 from tools import registry
 
@@ -37,6 +40,8 @@ MAX_PLAN_STEPS = 3
 # Сколько раз подряд можно просить модель переформулировать (сырой JSON / unknown type),
 # прежде чем soft-stop по зацикливанию.
 MAX_REPHRASE_RETRIES = 2
+# Сколько раз критик может отклонить выбор tool, прежде чем soft-stop.
+MAX_CRITIC_REJECTS = 2
 
 # 0 = лимит выключен. Перекрывается AgentRequest.max_tokens / запросом с фронта.
 DEFAULT_MAX_TOKENS = int(os.environ.get("MAX_TOKENS_PER_TURN", "0"))
@@ -321,6 +326,96 @@ def _tool_signature(tool: str, arguments: object) -> str:
     )
 
 
+def _last_user_text(messages: list[dict]) -> str:
+    """Текст последнего сообщения пользователя из истории UI."""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            return str(m.get("content") or "").strip()
+    return ""
+
+
+CRITIC_PROTOCOL = """\
+Ты — критик выбора инструментов агента. Тебе дают вопрос пользователя, список \
+доступных tools и предложенный вызов. Проверь, уместен ли этот tool для ответа \
+на вопрос (и адекватны ли аргументы).
+
+Верни РОВНО ОДИН JSON-объект и ничего больше:
+{"ok": true, "reason": "кратко почему вызов уместен"}
+или
+{"ok": false, "reason": "кратко что не так и какой tool уместнее"}
+
+Правила:
+- ok=true, если tool реально помогает ответить на вопрос;
+- ok=false, если tool не по теме, лишний, или аргументы явно бессмысленны;
+- memory_search уместен для смыслового поиска по коммитам (короткий query 2–4 слова);
+- pg_get_latest_release — про последний релиз; pg_list_commits — про список коммитов;
+- pg_list_issues — про issues; pg_get_repo — про метаданные репозитория;
+- не отклоняй вызов только из-за стиля формулировки, если смысл верный.
+"""
+
+
+@dataclass
+class CriticVerdict:
+    ok: bool
+    reason: str
+
+
+async def _critique_tool_call(
+    req: AgentRequest,
+    tool: str,
+    arguments: object,
+    prior_calls: list[str],
+    budget: TokenBudget | None,
+    totals: dict,
+) -> tuple[CriticVerdict, list[str]]:
+    """LLM-критик: уместен ли предложенный tool для вопроса пользователя.
+
+    Возвращает (verdict, budget_notes). Расход токенов критика учитывается
+    в totals/budget. При сбое сети/парсинга — fail-open (ok=true).
+    """
+    user_q = _last_user_text(req.messages) or "(вопрос не найден)"
+    args = arguments if isinstance(arguments, dict) else {}
+    prior = ", ".join(prior_calls) if prior_calls else "(ещё не было)"
+    payload = {
+        "user_question": user_q,
+        "available_tools": registry.tools_description(),
+        "proposed_call": {"tool": tool, "arguments": args},
+        "already_called": prior,
+    }
+    messages = [
+        {"role": "system", "content": CRITIC_PROTOCOL},
+        {
+            "role": "user",
+            "content": json.dumps(payload, ensure_ascii=False, default=str),
+        },
+    ]
+    try:
+        raw, usage = await complete_chat(
+            messages, req.model or "deepseek/deepseek-v4-flash", temperature=0
+        )
+    except Exception as e:  # noqa: BLE001
+        return CriticVerdict(ok=True, reason=f"критик недоступен, пропускаю: {e}"), []
+
+    # Учитываем фактический usage критика в счётчиках хода.
+    pin = int(usage.get("prompt_tokens") or 0)
+    pout = int(usage.get("completion_tokens") or 0)
+    if pin == 0 and pout == 0:
+        pin = _est_tokens(" ".join(m.get("content", "") for m in messages))
+        pout = _est_tokens(raw)
+    totals["in"] = totals.get("in", 0) + pin
+    totals["out"] = totals.get("out", 0) + pout
+    notes: list[str] = []
+    if budget is not None:
+        notes = budget.add_usage(pin, pout)
+
+    parsed = _parse_json(raw) or {}
+    ok = bool(parsed.get("ok", True))
+    reason = str(parsed.get("reason") or "").strip() or (
+        "ok" if ok else "вызов отклонён без пояснения"
+    )
+    return CriticVerdict(ok=ok, reason=reason), notes
+
+
 async def _soft_finalize_react(
     convo: list[dict],
     req: AgentRequest,
@@ -332,8 +427,8 @@ async def _soft_finalize_react(
 ) -> AsyncIterator[Event]:
     """Soft stop / исчерпание шагов: один финальный ответ по уже собранным данным.
 
-    reason: "budget" | "steps" | "loop"
-    detail: уточнение для loop (повтор tool / слишком много переформулировок).
+    reason: "budget" | "steps" | "loop" | "critic"
+    detail: уточнение для loop/critic.
     """
     if reason == "budget" and budget is not None:
         yield Status(
@@ -344,10 +439,10 @@ async def _soft_finalize_react(
             f"soft stop: token budget ({budget.spent}/{budget.max_total}, "
             f"reserve={budget.reserve})"
         )
-    elif reason == "loop":
-        why = detail or "зацикливание"
+    elif reason in ("loop", "critic"):
+        why = detail or ("критик остановил агента" if reason == "critic" else "зацикливание")
         yield Status(f"⏹ {why} — отвечаю по собранным данным…")
-        yield Trace(f"soft stop: loop ({why})")
+        yield Trace(f"soft stop: {reason} ({why})")
     else:
         yield Status("ReAct: шаги исчерпаны — формирую ответ по собранным данным…")
 
@@ -386,13 +481,16 @@ async def run_react(req: AgentRequest) -> AsyncIterator[Event]:
     Soft stop по бюджету: после фактического usage, если остался только reserve,
     выходим из цикла и один раз финализируем ответ.
     Soft stop по зацикливанию: повторный tool+args или слишком много
-    служебных переформулировок → тоже soft finalize."""
+    служебных переформулировок → тоже soft finalize.
+    Критик: перед execute проверяет уместность tool; при серии отказов — soft stop."""
     system = _compose_system(REACT_PROTOCOL.format(tools=registry.tools_description()))
     convo: list[dict] = [{"role": "system", "content": system}, *req.messages]
     totals = {"in": 0, "out": 0}
     budget = _make_budget(req)
     seen_tool_calls: set[str] = set()
+    executed_tools: list[str] = []
     rephrase_count = 0
+    critic_reject_count = 0
     if budget is not None:
         yield Trace(
             f"бюджет хода: max={budget.max_total}, reserve={budget.reserve}"
@@ -480,6 +578,8 @@ async def run_react(req: AgentRequest) -> AsyncIterator[Event]:
         if decision.get("type") == "tool_call":
             tool = str(decision.get("tool", ""))
             arguments = decision.get("arguments") or {}
+            if not isinstance(arguments, dict):
+                arguments = {}
             signature = _tool_signature(tool, arguments)
             if signature in seen_tool_calls:
                 yield Trace(
@@ -495,11 +595,62 @@ async def run_react(req: AgentRequest) -> AsyncIterator[Event]:
                 ):
                     yield ev
                 return
+
+            # Критик: уместен ли этот tool для вопроса пользователя.
+            yield Status(
+                f"ReAct · шаг {step}/{MAX_REACT_STEPS}: критик проверяет {tool}…"
+            )
+            verdict, budget_notes = await _critique_tool_call(
+                req, tool, arguments, executed_tools, budget, totals
+            )
+            yield Usage(totals["in"], totals["out"])
+            for note in budget_notes:
+                yield Trace(note)
+            yield Trace(
+                f"критик: {'✓ ok' if verdict.ok else '✗ reject'} — {verdict.reason}"
+            )
+
+            if not verdict.ok:
+                critic_reject_count += 1
+                convo.append({"role": "assistant", "content": raw})
+                convo.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Критик отклонил вызов {tool}: {verdict.reason}. "
+                            "Выбери более подходящий tool или дай final-ответ, "
+                            "если данных уже достаточно. Не повторяй тот же неудачный вызов."
+                        ),
+                    }
+                )
+                if critic_reject_count >= MAX_CRITIC_REJECTS:
+                    async for ev in _soft_finalize_react(
+                        convo,
+                        req,
+                        totals,
+                        budget,
+                        reason="critic",
+                        detail=(
+                            f"критик: слишком много отклонённых tools "
+                            f"({critic_reject_count}/{MAX_CRITIC_REJECTS})"
+                        ),
+                    ):
+                        yield ev
+                    return
+                if budget is not None and not budget.can_continue_loop():
+                    async for ev in _soft_finalize_react(
+                        convo, req, totals, budget, reason="budget"
+                    ):
+                        yield ev
+                    return
+                continue
+
             seen_tool_calls.add(signature)
             yield Status(f"ReAct · шаг {step}/{MAX_REACT_STEPS}: выполняю {tool}…")
             result = await registry.execute(tool, arguments)
             result_dict = result.to_dict()
             yield ToolCall(name=tool, arguments=arguments, result=result_dict)
+            executed_tools.append(tool)
             observation = json.dumps(result_dict, ensure_ascii=False, default=str)
             # Добавляем в диалог решение модели и наблюдение — как новый ход.
             convo.append({"role": "assistant", "content": raw})
